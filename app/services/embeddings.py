@@ -14,3 +14,8 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
 
 def embed_text(text: str) -> list[float]:
     return embed_texts([text])[0]
+
+
+def record_text(record) -> str:
+    fields = record.canonical_json or record.raw_json or {}
+    return " ".join(f"{k}: {v}" for k, v in fields.items())

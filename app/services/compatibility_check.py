@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.models import Dataset, Record
 from app.services.domain_classification import classify_domain
-from app.services.embeddings import embed_texts
+from app.services.embeddings import embed_texts, record_text
 from app.services.field_alignment import align_fields
 
 CENTROID_SAMPLE_SIZE = 20
@@ -25,11 +25,6 @@ def _sample_records(db: Session, dataset_id) -> list[Record]:
     )
 
 
-def _record_text(record: Record) -> str:
-    fields = record.canonical_json or record.raw_json or {}
-    return " ".join(f"{k}: {v}" for k, v in fields.items())
-
-
 def _dataset_centroid(db: Session, dataset_id) -> tuple[np.ndarray, list[dict]]:
     """Embeds a sample of a dataset's records, persisting embeddings onto those
     Record rows for reuse. NOTE: the future bulk-embedding step (architecture doc
@@ -39,7 +34,7 @@ def _dataset_centroid(db: Session, dataset_id) -> tuple[np.ndarray, list[dict]]:
 
     to_embed = [r for r in records if r.embedding is None]
     if to_embed:
-        vectors = embed_texts([_record_text(r) for r in to_embed])
+        vectors = embed_texts([record_text(r) for r in to_embed])
         for record, vector in zip(to_embed, vectors):
             record.embedding = vector
         db.flush()
