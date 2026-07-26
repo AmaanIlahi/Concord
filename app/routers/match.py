@@ -9,6 +9,7 @@ from app.models import Dataset, MatchJob
 from app.services.blocking import run_blocking
 from app.services.compatibility_check import run_compatibility_check
 from app.services.hybrid_scoring import run_hybrid_scoring
+from app.services.llm_judge import run_llm_judge
 
 router = APIRouter(tags=["match"])
 
@@ -117,6 +118,29 @@ def run_scoring_step(job_id: str, db: Session = Depends(get_db)):
         "match_job_id": match_job.id,
         "status": match_job.status,
         "scored_pairs": results,
+    }
+
+
+@router.post("/match-jobs/{job_id}/judge")
+def run_judge_step(job_id: str, db: Session = Depends(get_db)):
+    match_job = db.get(MatchJob, job_id)
+    if match_job is None:
+        raise HTTPException(status_code=404, detail="Match job not found")
+
+    if match_job.status != "scoring_complete":
+        raise HTTPException(
+            status_code=422,
+            detail=f"Match job status must be 'scoring_complete' to run judging, got '{match_job.status}'",
+        )
+
+    judged_count = run_llm_judge(db, match_job)
+    match_job.status = "judging_complete"
+    db.commit()
+
+    return {
+        "match_job_id": match_job.id,
+        "status": match_job.status,
+        "judged_pairs": judged_count,
     }
 
 
