@@ -1,13 +1,14 @@
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.models import Dataset, MatchJob
+from app.models import Conflict, Dataset, Match, MatchJob, Record
 from app.services.blocking import run_blocking
 from app.services.compatibility_check import run_compatibility_check
+from app.services.finalize import run_finalize
 from app.services.hybrid_scoring import run_hybrid_scoring
 from app.services.llm_judge import run_llm_judge
 
@@ -144,6 +145,80 @@ def run_judge_step(job_id: str, db: Session = Depends(get_db)):
     }
 
 
+@router.post("/match-jobs/{job_id}/finalize")
+def run_finalize_step(job_id: str, db: Session = Depends(get_db)):
+    match_job = db.get(MatchJob, job_id)
+    if match_job is None:
+        raise HTTPException(status_code=404, detail="Match job not found")
+
+    if match_job.status != "judging_complete":
+        raise HTTPException(
+            status_code=422,
+            detail=f"Match job status must be 'judging_complete' to finalize, got '{match_job.status}'",
+        )
+
+    tally = run_finalize(db, match_job)
+    match_job.status = "complete"
+    db.commit()
+
+    return {
+        "match_job_id": match_job.id,
+        "status": match_job.status,
+        "final_status_tally": tally,
+    }
+
+
 @router.get("/matches/{job_id}")
-def get_matches(job_id: str):
-    raise HTTPException(status_code=501, detail="Not implemented")
+def get_matches(job_id: str, status: str | None = Query(default=None), db: Session = Depends(get_db)):
+    match_job = db.get(MatchJob, job_id)
+    if match_job is None:
+        raise HTTPException(status_code=404, detail="Match job not found")
+
+    query = db.query(Match).filter(Match.job_id == job_id)
+    if status is not None:
+        query = query.filter(Match.final_status == status)
+    matches = query.all()
+
+    record_ids = {m.record_a_id for m in matches} | {m.record_b_id for m in matches}
+    records_by_id = {r.id: r for r in db.query(Record).filter(Record.id.in_(record_ids)).all()}
+
+    match_ids = [m.id for m in matches]
+    conflicts_by_match_id: dict = {}
+    if match_ids:
+        for conflict in db.query(Conflict).filter(Conflict.match_id.in_(match_ids)).all():
+            conflicts_by_match_id.setdefault(conflict.match_id, []).append(conflict)
+
+    def serialize_record(record: Record | None) -> dict | None:
+        if record is None:
+            return None
+        return {"id": record.id, "canonical_json": record.canonical_json}
+
+    results = []
+    for match in matches:
+        results.append(
+            {
+                "match_id": match.id,
+                "record_a": serialize_record(records_by_id.get(match.record_a_id)),
+                "record_b": serialize_record(records_by_id.get(match.record_b_id)),
+                "blocking_score": match.blocking_score,
+                "hybrid_score": match.hybrid_score,
+                "llm_verdict": match.llm_verdict,
+                "final_status": match.final_status,
+                "conflicts": [
+                    {
+                        "field_name": c.field_name,
+                        "value_a": c.value_a,
+                        "value_b": c.value_b,
+                        "conflict_type": c.conflict_type,
+                    }
+                    for c in conflicts_by_match_id.get(match.id, [])
+                ],
+            }
+        )
+
+    return {
+        "match_job_id": job_id,
+        "status_filter": status,
+        "count": len(results),
+        "matches": results,
+    }
