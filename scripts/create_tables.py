@@ -20,6 +20,15 @@ def main():
         )
     print("HNSW index ensured on records.embedding")
 
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "ALTER TABLE match_jobs ADD COLUMN IF NOT EXISTS "
+                "string_similarity_available BOOLEAN"
+            )
+        )
+    print("string_similarity_available column ensured on match_jobs")
+
 
 if __name__ == "__main__":
     main()

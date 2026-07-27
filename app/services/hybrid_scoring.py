@@ -1,7 +1,11 @@
+import logging
+
 from rapidfuzz import fuzz
 from sqlalchemy.orm import Session
 
 from app.models import Match, MatchJob, Record
+
+logger = logging.getLogger(__name__)
 
 STRING_SCORE_WEIGHT = 0.5
 BLOCKING_SCORE_WEIGHT = 0.5
@@ -41,12 +45,31 @@ def run_hybrid_scoring(db: Session, match_job: MatchJob) -> list[dict]:
     """Scores every candidate pair from blocking, persisting hybrid_score and
     final_status on each Match row. Returns per-pair details (including the
     string_score component, which isn't a persisted column) for callers that
-    want to inspect the score breakdown."""
+    want to inspect the score breakdown.
+
+    If the compatibility check produced no field alignment at all (field_overlap
+    found zero shared fields), there is no meaningful string-similarity signal to
+    compute — falling back to string_score=0.0 for every pair would silently read
+    as "definitely different" when it actually means "never compared." Instead,
+    hybrid_score falls back to blocking_score alone for the whole job, and
+    match_job.string_similarity_available is set to False so this degraded-signal
+    run stays visible to any caller (including the eval module) rather than being
+    indistinguishable from a normal run with real string scores."""
     field_alignment = (
         match_job.compatibility_check.get("signals", {})
         .get("field_overlap", {})
         .get("alignment", {})
     )
+    string_similarity_available = bool(field_alignment)
+    match_job.string_similarity_available = string_similarity_available
+
+    if not string_similarity_available:
+        logger.warning(
+            "Match job %s has an empty field alignment (field_overlap found no "
+            "shared fields) — falling back to blocking_score alone for every pair "
+            "in this job. string_similarity_available=False.",
+            match_job.id,
+        )
 
     matches = db.query(Match).filter(Match.job_id == match_job.id).all()
 
@@ -60,11 +83,15 @@ def run_hybrid_scoring(db: Session, match_job: MatchJob) -> list[dict]:
         record_a = records_by_id[match.record_a_id]
         record_b = records_by_id[match.record_b_id]
 
-        string_score = _string_similarity(record_a, record_b, field_alignment)
-        hybrid_score = (
-            STRING_SCORE_WEIGHT * string_score
-            + BLOCKING_SCORE_WEIGHT * match.blocking_score
-        )
+        if string_similarity_available:
+            string_score = _string_similarity(record_a, record_b, field_alignment)
+            hybrid_score = (
+                STRING_SCORE_WEIGHT * string_score
+                + BLOCKING_SCORE_WEIGHT * match.blocking_score
+            )
+        else:
+            string_score = None
+            hybrid_score = match.blocking_score
 
         match.hybrid_score = hybrid_score
         match.final_status = _assign_status(hybrid_score)

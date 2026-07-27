@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import DateTime, ForeignKey, String
+from sqlalchemy import Boolean, DateTime, ForeignKey, String
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -16,3 +16,4 @@ class MatchJob(Base):
     status: Mapped[str] = mapped_column(String, nullable=True)
     compatibility_check: Mapped[dict] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[object] = mapped_column(DateTime, nullable=True)
+    string_similarity_available: Mapped[bool] = mapped_column(Boolean, nullable=True)
