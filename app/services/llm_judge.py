@@ -3,6 +3,8 @@ import json
 import logging
 
 from openai import APIConnectionError, APITimeoutError, AsyncOpenAI, RateLimitError
+from sqlalchemy import cast, or_
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -44,6 +46,42 @@ async def _create_with_rate_limit_retry(**kwargs):
 
 SYSTEM_PROMPT = """You are a data integration assistant judging whether two records \
 from different datasets refer to the same real-world entity.
+
+Base "match" on whether the underlying product/entity is the same — the same core \
+name, description, and identity — not on whether every field is identical. Records \
+sourced from different retailers or platforms (e.g. Amazon vs. Google Shopping) \
+routinely differ in price, and the seller/manufacturer name is often listed \
+inconsistently or left blank by one source. These differences alone are NOT grounds \
+for match=false:
+- Price differences alone should NOT disqualify a match — the same physical product \
+is commonly priced differently across sources.
+- Manufacturer/brand-name differences or omissions alone should NOT disqualify a \
+match — one source may list a reseller, omit it, or format it differently.
+
+When the entity is clearly the same but a field like price or manufacturer differs, \
+set match=true and report the discrepancy in "conflicts" instead — that is exactly \
+what conflicts are for. Reserve match=false for cases where the underlying product \
+itself is different (different item, different edition/version where that matters, \
+or the description makes clear they are not the same thing) — not just because a \
+field value differs.
+
+Example — same product, different price (this should be match=true, not false):
+Input:
+{"record_a": {"name": "Adobe Photoshop CS3", "price": "599.00", "manufacturer": "Adobe"},
+ "record_b": {"name": "adobe photoshop cs3", "price": "549.99", "manufacturer": ""}}
+Correct output:
+{"match": true, "confidence": "high",
+ "reasoning": "Same product (Adobe Photoshop CS3) listed by different sources with different prices.",
+ "conflicts": [{"field": "price", "value_a": "599.00", "value_b": "549.99", "type": "unit_mismatch"}]}
+
+Example — genuinely different products (this should be match=false):
+Input:
+{"record_a": {"name": "Adobe Photoshop CS3", "price": "599.00", "manufacturer": "Adobe"},
+ "record_b": {"name": "Adobe Illustrator CS3", "price": "599.00", "manufacturer": "Adobe"}}
+Correct output:
+{"match": false, "confidence": "high",
+ "reasoning": "Different Adobe products (Photoshop vs. Illustrator), not the same entity.",
+ "conflicts": []}
 
 Respond with a single JSON object in exactly this shape:
 {
@@ -178,13 +216,21 @@ def run_llm_judge(db: Session, match_job: MatchJob) -> int:
     interrupted partway through, since /judge only sets final_status to
     needs_manual_review on failure and otherwise leaves it as pending_judge) are
     skipped rather than re-judged, so resuming an interrupted job doesn't re-pay
-    for LLM calls already made and already committed."""
+    for LLM calls already made and already committed.
+
+    Checks for both true SQL NULL and the JSONB literal `null` — a JSONB column
+    assigned Python None via the ORM is stored as the JSON value null, not SQL
+    NULL, so `.is_(None)` alone misses already-cleared rows and would silently
+    re-judge them."""
     matches = (
         db.query(Match)
         .filter(
             Match.job_id == match_job.id,
             Match.final_status == "pending_judge",
-            Match.llm_verdict.is_(None),
+            or_(
+                Match.llm_verdict.is_(None),
+                cast(Match.llm_verdict, JSONB) == JSONB.NULL,
+            ),
         )
         .all()
     )
