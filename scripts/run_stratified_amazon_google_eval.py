@@ -3,12 +3,16 @@ from pathlib import Path
 
 import requests
 
-from load_benchmark import load_benchmark_pair
+from load_benchmark import load_stratified_sample
 from app.db import SessionLocal
 from app.services.bulk_embedding import embed_dataset_records
 
 BASE_URL = "http://127.0.0.1:8000"
 REQUEST_TIMEOUT = 3600
+DATASET_PAIR_NAME = "amazon_google_stratified_150"
+
+POSITIVE_COUNT = 150
+NEGATIVE_COUNT = 150
 
 
 def upload(path: Path) -> tuple[str, int]:
@@ -36,18 +40,24 @@ def timed(label, fn):
 
 
 def main():
-    print("Loading full Amazon-Google Products benchmark (no limit)...")
-    amazon_path, google_path = load_benchmark_pair(limit=None)
+    print(
+        f"Building stratified Amazon-Google sample "
+        f"({POSITIVE_COUNT} positives + {NEGATIVE_COUNT} negatives)..."
+    )
+    amazon_path, google_path, gold_path = load_stratified_sample(
+        positive_count=POSITIVE_COUNT, negative_count=NEGATIVE_COUNT
+    )
+    print(f"  gold file scoped to sample: {gold_path.name}")
 
     print(f"\nUploading {amazon_path.name} ...")
     (amazon_id, amazon_count), upload_a_time = timed(
-        "Upload Amazon (full)", lambda: upload(amazon_path)
+        "Upload Amazon (stratified sample)", lambda: upload(amazon_path)
     )
     print(f"  dataset_id={amazon_id}  row_count={amazon_count}")
 
     print(f"\nUploading {google_path.name} ...")
     (google_id, google_count), upload_b_time = timed(
-        "Upload Google (full)", lambda: upload(google_path)
+        "Upload Google (stratified sample)", lambda: upload(google_path)
     )
     print(f"  dataset_id={google_id}  row_count={google_count}")
 
@@ -143,7 +153,7 @@ def main():
     def do_eval():
         return requests.post(
             f"{BASE_URL}/eval",
-            json={"match_job_id": match_job_id, "dataset_pair_name": "amazon_google"},
+            json={"match_job_id": match_job_id, "dataset_pair_name": DATASET_PAIR_NAME},
             timeout=REQUEST_TIMEOUT,
         )
 
@@ -160,7 +170,7 @@ def main():
     )
 
     print("\n" + "=" * 70)
-    print("PIPELINE SUMMARY")
+    print("PIPELINE SUMMARY (stratified sample)")
     print("=" * 70)
     print(f"Amazon records uploaded:    {amazon_count}")
     print(f"Google records uploaded:    {google_count}")
@@ -188,7 +198,7 @@ def main():
         print("*** WARNING: string_similarity_available=False for this job ***")
         print("*** Field alignment was empty; hybrid_score fell back to blocking_score alone. ***")
         print("*** Precision/recall below reflect a degraded signal, not a normal run. ***\n")
-    print(f"gold_pair_count:      {ma['gold_pair_count']}")
+    print(f"gold_pair_count (scoped to sample): {ma['gold_pair_count']}")
     print(f"predicted_pair_count: {ma['predicted_pair_count']}")
     print(f"true_positives:       {ma['true_positives']}")
     print(f"false_positives:      {ma['false_positives']}")
@@ -213,7 +223,7 @@ def main():
     print(f"resolved_by_hybrid_alone: {ce['resolved_by_hybrid_alone']} ({ce['hybrid_only_fraction']:.1%})")
     print(f"escalated_to_judge:       {ce['escalated_to_judge']} ({ce['escalated_fraction']:.1%})")
 
-    print("\nFull benchmark pipeline + eval completed without errors.")
+    print("\nStratified benchmark pipeline + eval completed without errors.")
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ compatible with our POST /datasets upload endpoint.
 """
 import csv
 import io
+import random
 import sys
 import zipfile
 from pathlib import Path
@@ -77,6 +78,76 @@ def load_benchmark_pair(limit: int | None = None) -> tuple[Path, Path]:
         _write_csv(google_sample, rows, reader.fieldnames)
 
     return amazon_sample, google_sample
+
+
+def load_stratified_sample(
+    positive_count: int = 150, negative_count: int = 150, seed: int = 42
+) -> tuple[Path, Path, Path]:
+    """Builds a stratified sample instead of a plain head-of-file truncation:
+    `positive_count` Amazon records that have a known gold match (plus their
+    matched Google counterparts), and `negative_count` additional Google records
+    with no gold match at all (negative examples). Total ~positive_count Amazon +
+    (positive_count + negative_count) Google records. Deterministic given `seed`,
+    so re-running produces the same sample. Also writes a gold file scoped to just
+    the sampled positive pairs — using the full 1300-pair gold file against this
+    small sample would massively inflate false_negatives with pairs whose records
+    were never even uploaded. Returns (amazon_csv_path, google_csv_path, gold_csv_path)."""
+    if not (AMAZON_OUT.exists() and GOOGLE_OUT.exists() and GOLD_OUT.exists()):
+        download_and_extract()
+
+    with open(GOLD_OUT, encoding="utf-8", newline="") as f:
+        gold_pairs = list(csv.DictReader(f))
+
+    rng = random.Random(seed)
+    rng.shuffle(gold_pairs)
+    chosen_gold = gold_pairs[:positive_count]
+    positive_amazon_ids = {row["idAmazon"] for row in chosen_gold}
+    positive_google_ids = {row["idGoogleBase"] for row in chosen_gold}
+
+    with open(AMAZON_OUT, encoding="utf-8", newline="") as f:
+        amazon_reader = csv.DictReader(f)
+        amazon_fieldnames = amazon_reader.fieldnames
+        all_amazon_rows = list(amazon_reader)
+
+    with open(GOOGLE_OUT, encoding="utf-8", newline="") as f:
+        google_reader = csv.DictReader(f)
+        google_fieldnames = google_reader.fieldnames
+        all_google_rows = list(google_reader)
+
+    amazon_by_id = {row["id"]: row for row in all_amazon_rows}
+    google_by_id = {row["id"]: row for row in all_google_rows}
+
+    sample_amazon_rows = [
+        amazon_by_id[aid] for aid in positive_amazon_ids if aid in amazon_by_id
+    ]
+    sample_google_rows = [
+        google_by_id[gid] for gid in positive_google_ids if gid in google_by_id
+    ]
+
+    non_match_google_rows = [
+        row for row in all_google_rows if row["id"] not in positive_google_ids
+    ]
+    rng.shuffle(non_match_google_rows)
+    negative_google_rows = non_match_google_rows[:negative_count]
+    sample_google_rows.extend(negative_google_rows)
+
+    amazon_sample_path = BENCHMARK_DIR / f"amazon_stratified_{positive_count}.csv"
+    google_sample_path = BENCHMARK_DIR / f"google_stratified_{positive_count}_{negative_count}.csv"
+    gold_sample_path = BENCHMARK_DIR / f"gold_stratified_{positive_count}.csv"
+
+    _write_csv(amazon_sample_path, sample_amazon_rows, amazon_fieldnames)
+    _write_csv(google_sample_path, sample_google_rows, google_fieldnames)
+    _write_csv(gold_sample_path, chosen_gold, ["idAmazon", "idGoogleBase"])
+
+    print(
+        f"Stratified sample: {len(sample_amazon_rows)} Amazon "
+        f"({len(positive_amazon_ids)} with a gold match), "
+        f"{len(sample_google_rows)} Google "
+        f"({len(positive_google_ids)} matched + {len(negative_google_rows)} unmatched negatives), "
+        f"{len(chosen_gold)} gold pairs scoped to this sample"
+    )
+
+    return amazon_sample_path, google_sample_path, gold_sample_path
 
 
 if __name__ == "__main__":
