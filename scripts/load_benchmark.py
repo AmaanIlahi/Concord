@@ -1,7 +1,10 @@
-"""Downloads the Amazon-Google Products entity-matching benchmark (Leipzig DB
-group mirror of the classic Magellan/DeepMatcher dataset: 1363 Amazon products,
-3226 Google products, 1300 gold-standard matches) and converts it into CSVs
-compatible with our POST /datasets upload endpoint.
+"""Downloads entity-matching benchmarks (Leipzig DB group mirrors of the classic
+Magellan/DeepMatcher datasets) and converts them into CSVs compatible with our
+POST /datasets upload endpoint.
+
+Currently supports:
+- Amazon-Google Products: 1363 Amazon products, 3226 Google products, 1300 gold matches
+- DBLP-ACM: 2616 DBLP papers, 2294 ACM papers, 2224 gold matches
 """
 import csv
 import io
@@ -20,6 +23,14 @@ AMAZON_OUT = BENCHMARK_DIR / "amazon.csv"
 GOOGLE_OUT = BENCHMARK_DIR / "google.csv"
 GOLD_OUT = BENCHMARK_DIR / "gold_matches.csv"
 
+DBLP_ACM_DATASET_URL = "https://dbs.uni-leipzig.de/files/datasets/DBLP-ACM.zip"
+DBLP_ACM_DBLP_ENCODING = "cp1252"
+
+DBLP_ACM_BENCHMARK_DIR = Path(__file__).parent / "sample_data" / "benchmarks" / "dblp_acm"
+DBLP_OUT = DBLP_ACM_BENCHMARK_DIR / "dblp.csv"
+ACM_OUT = DBLP_ACM_BENCHMARK_DIR / "acm.csv"
+DBLP_ACM_GOLD_OUT = DBLP_ACM_BENCHMARK_DIR / "gold_matches.csv"
+
 
 def download_and_extract() -> None:
     BENCHMARK_DIR.mkdir(parents=True, exist_ok=True)
@@ -29,9 +40,9 @@ def download_and_extract() -> None:
     response.raise_for_status()
 
     with zipfile.ZipFile(io.BytesIO(response.content)) as zf:
-        amazon_rows = _read_csv_member(zf, "Amazon.csv")
-        google_rows = _read_csv_member(zf, "GoogleProducts.csv")
-        gold_rows = _read_csv_member(zf, "Amzon_GoogleProducts_perfectMapping.csv")
+        amazon_rows = _read_csv_member(zf, "Amazon.csv", SOURCE_ENCODING)
+        google_rows = _read_csv_member(zf, "GoogleProducts.csv", SOURCE_ENCODING)
+        gold_rows = _read_csv_member(zf, "Amzon_GoogleProducts_perfectMapping.csv", SOURCE_ENCODING)
 
     _write_csv(AMAZON_OUT, amazon_rows, ["id", "title", "description", "manufacturer", "price"])
     _write_csv(GOOGLE_OUT, google_rows, ["id", "name", "description", "manufacturer", "price"])
@@ -42,8 +53,30 @@ def download_and_extract() -> None:
     print(f"Wrote {len(gold_rows)} gold matches -> {GOLD_OUT}")
 
 
-def _read_csv_member(zf: zipfile.ZipFile, member_name: str) -> list[dict]:
-    raw = zf.read(member_name).decode(SOURCE_ENCODING)
+def download_and_extract_dblp_acm() -> None:
+    DBLP_ACM_BENCHMARK_DIR.mkdir(parents=True, exist_ok=True)
+
+    print(f"Downloading {DBLP_ACM_DATASET_URL} ...")
+    response = requests.get(DBLP_ACM_DATASET_URL, timeout=60)
+    response.raise_for_status()
+
+    with zipfile.ZipFile(io.BytesIO(response.content)) as zf:
+        dblp_rows = _read_csv_member(zf, "DBLP2.csv", DBLP_ACM_DBLP_ENCODING)
+        acm_rows = _read_csv_member(zf, "ACM.csv", "utf-8")
+        gold_rows = _read_csv_member(zf, "DBLP-ACM_perfectMapping.csv", "utf-8")
+
+    fieldnames = ["id", "title", "authors", "venue", "year"]
+    _write_csv(DBLP_OUT, dblp_rows, fieldnames)
+    _write_csv(ACM_OUT, acm_rows, fieldnames)
+    _write_csv(DBLP_ACM_GOLD_OUT, gold_rows, ["idDBLP", "idACM"])
+
+    print(f"Wrote {len(dblp_rows)} DBLP rows -> {DBLP_OUT}")
+    print(f"Wrote {len(acm_rows)} ACM rows -> {ACM_OUT}")
+    print(f"Wrote {len(gold_rows)} gold matches -> {DBLP_ACM_GOLD_OUT}")
+
+
+def _read_csv_member(zf: zipfile.ZipFile, member_name: str, encoding: str = SOURCE_ENCODING) -> list[dict]:
+    raw = zf.read(member_name).decode(encoding)
     return list(csv.DictReader(io.StringIO(raw)))
 
 
@@ -148,6 +181,72 @@ def load_stratified_sample(
     )
 
     return amazon_sample_path, google_sample_path, gold_sample_path
+
+
+def load_dblp_acm_stratified_sample(
+    positive_count: int = 150, negative_count: int = 150, seed: int = 42
+) -> tuple[Path, Path, Path]:
+    """Same stratified-sampling approach as load_stratified_sample, but for the
+    DBLP-ACM benchmark: `positive_count` DBLP records with a known ACM match
+    (plus their matched ACM counterparts), and `negative_count` additional
+    unmatched ACM records as negatives. Returns (dblp_csv_path, acm_csv_path,
+    gold_csv_path)."""
+    if not (DBLP_OUT.exists() and ACM_OUT.exists() and DBLP_ACM_GOLD_OUT.exists()):
+        download_and_extract_dblp_acm()
+
+    with open(DBLP_ACM_GOLD_OUT, encoding="utf-8", newline="") as f:
+        gold_pairs = list(csv.DictReader(f))
+
+    rng = random.Random(seed)
+    rng.shuffle(gold_pairs)
+    chosen_gold = gold_pairs[:positive_count]
+    positive_dblp_ids = {row["idDBLP"] for row in chosen_gold}
+    positive_acm_ids = {row["idACM"] for row in chosen_gold}
+
+    with open(DBLP_OUT, encoding="utf-8", newline="") as f:
+        dblp_reader = csv.DictReader(f)
+        dblp_fieldnames = dblp_reader.fieldnames
+        all_dblp_rows = list(dblp_reader)
+
+    with open(ACM_OUT, encoding="utf-8", newline="") as f:
+        acm_reader = csv.DictReader(f)
+        acm_fieldnames = acm_reader.fieldnames
+        all_acm_rows = list(acm_reader)
+
+    dblp_by_id = {row["id"]: row for row in all_dblp_rows}
+    acm_by_id = {row["id"]: row for row in all_acm_rows}
+
+    sample_dblp_rows = [
+        dblp_by_id[did] for did in positive_dblp_ids if did in dblp_by_id
+    ]
+    sample_acm_rows = [
+        acm_by_id[aid] for aid in positive_acm_ids if aid in acm_by_id
+    ]
+
+    non_match_acm_rows = [
+        row for row in all_acm_rows if row["id"] not in positive_acm_ids
+    ]
+    rng.shuffle(non_match_acm_rows)
+    negative_acm_rows = non_match_acm_rows[:negative_count]
+    sample_acm_rows.extend(negative_acm_rows)
+
+    dblp_sample_path = DBLP_ACM_BENCHMARK_DIR / f"dblp_stratified_{positive_count}.csv"
+    acm_sample_path = DBLP_ACM_BENCHMARK_DIR / f"acm_stratified_{positive_count}_{negative_count}.csv"
+    gold_sample_path = DBLP_ACM_BENCHMARK_DIR / f"gold_stratified_{positive_count}.csv"
+
+    _write_csv(dblp_sample_path, sample_dblp_rows, dblp_fieldnames)
+    _write_csv(acm_sample_path, sample_acm_rows, acm_fieldnames)
+    _write_csv(gold_sample_path, chosen_gold, ["idDBLP", "idACM"])
+
+    print(
+        f"Stratified sample (DBLP-ACM): {len(sample_dblp_rows)} DBLP "
+        f"({len(positive_dblp_ids)} with a gold match), "
+        f"{len(sample_acm_rows)} ACM "
+        f"({len(positive_acm_ids)} matched + {len(negative_acm_rows)} unmatched negatives), "
+        f"{len(chosen_gold)} gold pairs scoped to this sample"
+    )
+
+    return dblp_sample_path, acm_sample_path, gold_sample_path
 
 
 if __name__ == "__main__":

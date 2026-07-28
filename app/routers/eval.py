@@ -16,12 +16,15 @@ from app.services.eval_matching import (
 
 router = APIRouter(prefix="/eval", tags=["eval"])
 
-_BENCHMARK_DIR = (
-    Path(__file__).parent.parent.parent / "scripts" / "sample_data" / "benchmarks" / "amazon_google"
-)
+_BENCHMARKS_ROOT = Path(__file__).parent.parent.parent / "scripts" / "sample_data" / "benchmarks"
+_AMAZON_GOOGLE_DIR = _BENCHMARKS_ROOT / "amazon_google"
+_DBLP_ACM_DIR = _BENCHMARKS_ROOT / "dblp_acm"
+
 BENCHMARK_GOLD_PATHS = {
-    "amazon_google": _BENCHMARK_DIR / "gold_matches.csv",
-    "amazon_google_stratified_150": _BENCHMARK_DIR / "gold_stratified_150.csv",
+    "amazon_google": _AMAZON_GOOGLE_DIR / "gold_matches.csv",
+    "amazon_google_stratified_150": _AMAZON_GOOGLE_DIR / "gold_stratified_150.csv",
+    "dblp_acm": _DBLP_ACM_DIR / "gold_matches.csv",
+    "dblp_acm_stratified_150": _DBLP_ACM_DIR / "gold_stratified_150.csv",
 }
 
 

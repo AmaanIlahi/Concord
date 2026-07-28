@@ -10,9 +10,17 @@ MIN_CALIBRATION_BUCKET_SIZE = 20
 
 
 def _load_gold_pairs(gold_csv_path: Path) -> set[tuple[str, str]]:
+    """Reads a gold-standard mapping file. Column names vary by benchmark
+    (idAmazon/idGoogleBase, idDBLP/idACM, ...) so this reads the first two
+    columns positionally rather than assuming a fixed pair of names."""
     with open(gold_csv_path, encoding="utf-8", newline="") as f:
-        reader = csv.DictReader(f)
-        return {(row["idAmazon"], row["idGoogleBase"]) for row in reader}
+        reader = csv.reader(f)
+        header = next(reader)
+        if len(header) != 2:
+            raise ValueError(
+                f"Expected a 2-column gold mapping file, got columns {header!r} in {gold_csv_path}"
+            )
+        return {(row[0], row[1]) for row in reader}
 
 
 def _is_predicted_match(match: Match) -> bool:
@@ -25,9 +33,8 @@ def _is_predicted_match(match: Match) -> bool:
 
 def compute_matching_accuracy(db: Session, match_job: MatchJob, gold_csv_path: Path) -> dict:
     """Precision/recall/F1 against a gold-standard match file, comparing each
-    match's predicted status to the gold set of true (idAmazon, idGoogleBase) pairs.
-    Assumes match_job.dataset_a_id is the Amazon-sourced dataset and dataset_b_id is
-    the Google-sourced dataset (source ids are read from Record.raw_json["id"])."""
+    match's predicted status to the gold set of true (id_a, id_b) pairs (source
+    ids are read from Record.raw_json["id"])."""
     gold_pairs = _load_gold_pairs(gold_csv_path)
 
     matches = db.query(Match).filter(Match.job_id == match_job.id).all()
