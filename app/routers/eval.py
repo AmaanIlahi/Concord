@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models import EvalRun, MatchJob
+from app.services.eval_compatibility import run_compatibility_check_eval
 from app.services.eval_matching import (
     compute_confidence_calibration,
     compute_cost_efficiency,
@@ -85,8 +86,19 @@ def run_calibration_eval():
 
 
 @router.post("/compatibility-check")
-def run_compatibility_check_eval():
-    raise HTTPException(status_code=501, detail="Not implemented")
+def run_compatibility_check_eval_endpoint(db: Session = Depends(get_db)):
+    result = run_compatibility_check_eval(db)
+
+    eval_run = EvalRun(
+        eval_type="compatibility_check",
+        dataset_pair_name="compatibility_test_matrix",
+        metrics=result,
+        run_at=datetime.now(timezone.utc),
+    )
+    db.add(eval_run)
+    db.commit()
+
+    return result
 
 
 @router.get("/{eval_type}/history")

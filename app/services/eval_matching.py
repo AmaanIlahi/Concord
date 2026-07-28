@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.models import Match, MatchJob, Record
 
 PREDICTED_MATCH_STATUSES = {"auto_accepted", "accepted_with_conflicts"}
+MIN_CALIBRATION_BUCKET_SIZE = 20
 
 
 def _load_gold_pairs(gold_csv_path: Path) -> set[tuple[str, str]]:
@@ -70,7 +71,7 @@ def compute_matching_accuracy(db: Session, match_job: MatchJob, gold_csv_path: P
         "recall": recall,
         "f1": f1,
         # False if hybrid scoring had no field alignment to work with and fell back
-        # to blocking_score alone (see hybrid_scoring.run_hybrid_scoring) — these
+        # to blocking_score alone (see hybrid_scoring.run_hybrid_scoring) - these
         # precision/recall numbers were computed on a degraded signal and should be
         # called out, not reported as equivalent to a normal run.
         "string_similarity_available": match_job.string_similarity_available,
@@ -80,7 +81,18 @@ def compute_matching_accuracy(db: Session, match_job: MatchJob, gold_csv_path: P
 def compute_confidence_calibration(db: Session, match_job: MatchJob, gold_csv_path: Path) -> dict:
     """Buckets judged pairs by llm_verdict.confidence and reports actual accuracy
     (agreement with the gold set) within each bucket. 'Correct' means the judge's
-    match/no-match call agrees with whether the pair is truly in the gold set."""
+    match/no-match call agrees with whether the pair is truly in the gold set.
+
+    NOTE (2026-07-27): the LLM judge prompt was tightened to stop treating
+    price/manufacturer differences as disqualifying (see llm_judge.SYSTEM_PROMPT),
+    which fixed a recall gap (0.25 -> 0.95) but as a side effect collapsed the
+    confidence distribution to ~99% "high" on the amazon_google_stratified_150
+    sample (686/691), leaving medium/low with too few pairs (5 and 0) to be
+    statistically meaningful. The earlier finding of medium-confidence
+    miscalibration (~53% accuracy vs ~99%/96% for high/low) is no longer
+    measurable post-fix. This is a known, accepted tradeoff of the recall fix -
+    not a regression to silently chase further right now. See
+    "low_sample_buckets" in the returned dict for a programmatic flag of this."""
     gold_pairs = _load_gold_pairs(gold_csv_path)
 
     matches = (
@@ -117,6 +129,24 @@ def compute_confidence_calibration(db: Session, match_job: MatchJob, gold_csv_pa
         else:
             accuracy = None
         calibration[confidence] = {"count": len(outcomes), "accuracy": accuracy}
+
+    # Flag buckets too small to draw a calibration conclusion from, rather than
+    # letting a near-empty bucket's accuracy sit next to a well-sampled one with
+    # no indication of the sample-size gap between them.
+    low_sample_buckets = [
+        confidence
+        for confidence, stats in calibration.items()
+        if stats["count"] < MIN_CALIBRATION_BUCKET_SIZE
+    ]
+    if low_sample_buckets:
+        calibration["_note"] = (
+            f"Bucket(s) {low_sample_buckets} have fewer than "
+            f"{MIN_CALIBRATION_BUCKET_SIZE} judged pairs and are not statistically "
+            "meaningful for this run - a skewed confidence distribution (e.g. the "
+            "judge calling almost everything 'high') can hollow out the other "
+            "buckets. Compare against calibration/history for this dataset_pair_name "
+            "before treating a swing here as a real miscalibration finding."
+        )
 
     return calibration
 
