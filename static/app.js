@@ -19,17 +19,21 @@ const closeDetailButton = document.getElementById("close-detail");
 let currentMatches = [];
 
 sampleButton.addEventListener("click", async () => {
-  const [productsBlob, productsV2Blob] = await Promise.all([
-    fetch("/samples/products.csv").then((r) => r.blob()),
-    fetch("/samples/products_v2.csv").then((r) => r.blob()),
+  // Real Amazon/Google product listings (30-row slice of the stratified
+  // benchmark sample) rather than the tiny products.csv/products_v2.csv toy
+  // files — those are too small to reliably clear the compatibility check's
+  // per-field sampling minimums, making the demo flaky.
+  const [amazonBlob, googleBlob] = await Promise.all([
+    fetch("/samples/amazon_sample_30.csv").then((r) => r.blob()),
+    fetch("/samples/google_sample_30.csv").then((r) => r.blob()),
   ]);
 
   const dt1 = new DataTransfer();
-  dt1.items.add(new File([productsBlob], "products.csv", { type: "text/csv" }));
+  dt1.items.add(new File([amazonBlob], "amazon_sample_30.csv", { type: "text/csv" }));
   fileA.files = dt1.files;
 
   const dt2 = new DataTransfer();
-  dt2.items.add(new File([productsV2Blob], "products_v2.csv", { type: "text/csv" }));
+  dt2.items.add(new File([googleBlob], "google_sample_30.csv", { type: "text/csv" }));
   fileB.files = dt2.files;
 
   uploadForm.requestSubmit();

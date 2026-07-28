@@ -11,15 +11,28 @@ from app.services.field_alignment import align_fields
 
 logger = logging.getLogger(__name__)
 
-CENTROID_SAMPLE_SIZE = 50
+CENTROID_SAMPLE_SIZE = 100
 MIN_NON_EMPTY_PER_FIELD = 5
 
 MIN_SHARED_FIELDS = 2
 MIN_CENTROID_SIMILARITY = 0.7
+MIN_DOMAIN_SIMILARITY = 0.75
 
 
 def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
+
+
+def _label_similarity(label_a: str, label_b: str) -> float:
+    """Embedding-based similarity between two domain labels, rather than
+    near-exact string equality. "software products" and "music and software
+    products" should count as compatible domains, not a mismatch — exact-string
+    comparison was too brittle to wording differences the LLM introduces even
+    when describing conceptually overlapping domains."""
+    if label_a.strip().lower() == label_b.strip().lower():
+        return 1.0
+    vec_a, vec_b = embed_texts([label_a, label_b])
+    return _cosine_similarity(np.array(vec_a), np.array(vec_b))
 
 
 def _sample_records(db: Session, dataset_id) -> list[Record]:
@@ -28,6 +41,27 @@ def _sample_records(db: Session, dataset_id) -> list[Record]:
         .filter(Record.dataset_id == dataset_id)
         .order_by(func.random())
         .limit(CENTROID_SAMPLE_SIZE)
+        .all()
+    )
+
+
+DOMAIN_CLASSIFICATION_SAMPLE_SIZE = 10
+
+
+def _domain_classification_sample(db: Session, dataset_id) -> list[Record]:
+    """A deterministic sample (fixed order by id) used only for domain
+    classification. Unlike the random field-alignment/centroid sample, this must
+    be identical across repeated calls on the same dataset so that
+    temperature=0 actually yields identical wording run to run, not just
+    similar wording driven by a different random slice each time.
+    DOMAIN_CLASSIFICATION_SAMPLE_SIZE is deliberately larger than the 3 records
+    used elsewhere for prompt brevity — a too-small sample can be consistently
+    unrepresentative (e.g. skewed by one outlier record) even when fixed."""
+    return (
+        db.query(Record)
+        .filter(Record.dataset_id == dataset_id)
+        .order_by(Record.id)
+        .limit(DOMAIN_CLASSIFICATION_SAMPLE_SIZE)
         .all()
     )
 
@@ -128,9 +162,12 @@ def run_compatibility_check(db: Session, dataset_a: Dataset, dataset_b: Dataset)
     shared_field_count = alignment_result["shared_field_count"]
     field_overlap_ok = shared_field_count >= MIN_SHARED_FIELDS
 
-    domain_a = classify_domain(fields_a, sample_canonical_a[:3])
-    domain_b = classify_domain(fields_b, sample_canonical_b[:3])
-    domains_match = domain_a.strip().lower() == domain_b.strip().lower()
+    domain_sample_canonical_a = [r.canonical_json for r in _domain_classification_sample(db, dataset_a.id)]
+    domain_sample_canonical_b = [r.canonical_json for r in _domain_classification_sample(db, dataset_b.id)]
+    domain_a = classify_domain(fields_a, domain_sample_canonical_a)
+    domain_b = classify_domain(fields_b, domain_sample_canonical_b)
+    domain_similarity = _label_similarity(domain_a, domain_b)
+    domains_match = domain_similarity >= MIN_DOMAIN_SIMILARITY
 
     signals_passed = sum([field_overlap_ok, centroid_ok, domains_match])
     is_compatible = signals_passed >= 2
@@ -139,13 +176,13 @@ def run_compatibility_check(db: Session, dataset_a: Dataset, dataset_b: Dataset)
         reasoning = (
             f"Datasets appear compatible: {shared_field_count} aligned fields shared, "
             f"centroid similarity {centroid_similarity:.2f}, domains "
-            f"('{domain_a}' vs '{domain_b}')."
+            f"('{domain_a}' vs '{domain_b}', similarity {domain_similarity:.2f})."
         )
     else:
         reasoning = (
             f"Datasets appear incompatible: only {shared_field_count} aligned fields shared, "
             f"centroid similarity {centroid_similarity:.2f}, domains "
-            f"('{domain_a}' vs '{domain_b}')."
+            f"('{domain_a}' vs '{domain_b}', similarity {domain_similarity:.2f})."
         )
 
     return {
@@ -161,6 +198,7 @@ def run_compatibility_check(db: Session, dataset_a: Dataset, dataset_b: Dataset)
             "domain_classification": {
                 "domain_a": domain_a,
                 "domain_b": domain_b,
+                "similarity": domain_similarity,
                 "match": domains_match,
             },
             "centroid_distance": {
