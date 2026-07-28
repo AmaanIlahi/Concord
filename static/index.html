@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Concord</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <h1>Concord</h1>
+    <p class="subtitle">Entity matching &amp; conflict detection across datasets</p>
+  </header>
+
+  <main>
+    <section id="upload-section" class="panel">
+      <h2>1. Upload two datasets</h2>
+      <form id="upload-form">
+        <div class="field-row">
+          <label for="file-a">Dataset A (CSV or JSON)</label>
+          <input type="file" id="file-a" accept=".csv,.json" required>
+        </div>
+        <div class="field-row">
+          <label for="file-b">Dataset B (CSV or JSON)</label>
+          <input type="file" id="file-b" accept=".csv,.json" required>
+        </div>
+        <div class="button-row">
+          <button type="submit" id="run-button">Upload &amp; run pipeline</button>
+          <button type="button" id="sample-button">Try with sample dataset</button>
+        </div>
+      </form>
+    </section>
+
+    <section id="status-section" class="panel hidden">
+      <h2>2. Pipeline progress</h2>
+      <ol id="status-steps" class="status-steps">
+        <li data-step="upload-a">Upload dataset A</li>
+        <li data-step="upload-b">Upload dataset B</li>
+        <li data-step="match">Compatibility check</li>
+        <li data-step="block">Blocking</li>
+        <li data-step="score">Hybrid scoring</li>
+        <li data-step="judge">LLM judge</li>
+        <li data-step="finalize">Finalize</li>
+      </ol>
+      <div id="status-message"></div>
+    </section>
+
+    <section id="results-section" class="panel hidden">
+      <h2>3. Results</h2>
+      <div id="results-summary"></div>
+      <table id="results-table">
+        <thead>
+          <tr>
+            <th>Record A</th>
+            <th>Record B</th>
+            <th>Hybrid score</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="results-body"></tbody>
+      </table>
+    </section>
+
+    <section id="detail-section" class="panel hidden">
+      <h2>Pair detail</h2>
+      <button type="button" id="close-detail">&times; Close</button>
+      <div id="detail-content"></div>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>
