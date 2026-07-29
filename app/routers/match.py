@@ -11,6 +11,7 @@ from app.services.compatibility_check import run_compatibility_check
 from app.services.finalize import run_finalize
 from app.services.hybrid_scoring import run_hybrid_scoring
 from app.services.llm_judge import run_llm_judge
+from app.services.rate_limit import rate_limit_match
 
 router = APIRouter(tags=["match"])
 
@@ -20,7 +21,7 @@ class StartMatchJobRequest(BaseModel):
     dataset_b_id: str
 
 
-@router.post("/match")
+@router.post("/match", dependencies=[Depends(rate_limit_match)])
 def start_match_job(request: StartMatchJobRequest, db: Session = Depends(get_db)):
     if request.dataset_a_id == request.dataset_b_id:
         raise HTTPException(

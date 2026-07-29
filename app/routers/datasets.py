@@ -6,14 +6,31 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.models import Dataset, Record
 from app.services.file_parsing import UnsupportedFileType, parse_upload
+from app.services.rate_limit import rate_limit_dataset_upload
 from app.services.schema_mapping import infer_schema_mapping
+from app.services.upload_guardrails import (
+    UploadRejected,
+    validate_file_size,
+    validate_filename,
+    validate_row_count,
+)
 
 router = APIRouter(prefix="/datasets", tags=["datasets"])
 
 
-@router.post("")
+@router.post("", dependencies=[Depends(rate_limit_dataset_upload)])
 def upload_dataset(file: UploadFile, db: Session = Depends(get_db)):
+    try:
+        validate_filename(file.filename)
+    except UploadRejected as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
     content = file.file.read()
+
+    try:
+        validate_file_size(content)
+    except UploadRejected as e:
+        raise HTTPException(status_code=413, detail=str(e))
 
     try:
         rows = parse_upload(file.filename, content)
@@ -22,6 +39,11 @@ def upload_dataset(file: UploadFile, db: Session = Depends(get_db)):
 
     if not rows:
         raise HTTPException(status_code=422, detail="File contains no rows")
+
+    try:
+        validate_row_count(len(rows))
+    except UploadRejected as e:
+        raise HTTPException(status_code=422, detail=str(e))
 
     headers = list(rows[0].keys())
     schema_mapping = infer_schema_mapping(headers, rows)
